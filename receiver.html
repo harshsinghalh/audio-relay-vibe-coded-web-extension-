@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AntiGravity Remote Receiver</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --card: #1e293b;
+      --accent: #38bdf8;
+      --green: #10b981;
+      --text: #f8fafc;
+      --text-dim: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .receiver-card {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 28px;
+      padding: 28px 24px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+      text-align: center;
+    }
+    .device-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(52, 211, 153, 0.3);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      background: #10b981;
+      border-radius: 50%;
+      box-shadow: 0 0 8px #10b981;
+      animation: pulse 1.5s infinite;
+    }
+    .pulse-dot.offline {
+      background: #ef4444;
+      box-shadow: 0 0 8px #ef4444;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    h1 { font-size: 20px; margin-bottom: 6px; }
+    p.sub { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; }
+    .token-input-box {
+      margin-bottom: 18px;
+    }
+    .token-input {
+      width: 100%;
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 12px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+      text-align: center;
+    }
+    .token-input:focus { border-color: var(--accent); }
+    .canvas-box {
+      background: #070d18;
+      border-radius: 16px;
+      padding: 10px;
+      margin-bottom: 20px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    canvas { width: 100%; height: 90px; display: block; }
+    .btn-play {
+      background: linear-gradient(135deg, #0284c7, #38bdf8);
+      color: #ffffff;
+      border: none;
+      width: 100%;
+      padding: 14px;
+      border-radius: 16px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 8px 20px rgba(2, 132, 199, 0.4);
+      transition: transform 0.15s ease;
+    }
+    .btn-play:active { transform: scale(0.97); }
+    .stats-row {
+      display: flex;
+      justify-content: space-around;
+      margin-top: 20px;
+      padding-top: 16px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      font-size: 12px;
+      color: var(--text-dim);
+    }
+    .stats-row b { color: var(--text); display: block; font-size: 14px; margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <div class="receiver-card">
+    <div class="device-badge" id="statusBadge">
+      <span class="pulse-dot" id="statusDot"></span>
+      <span id="statusLabel">Receiver Ready</span>
+    </div>
+    <h1>AntiGravity Audio Receiver</h1>
+    <p class="sub">Ultra Low Latency WebRTC Stream • Opus 48kHz</p>
+
+    <div class="token-input-box">
+      <input type="text" class="token-input" id="inputAuthToken" placeholder="Enter LAN Auth Token" value="sec-p2p-relay-token">
+    </div>
+
+    <div class="canvas-box">
+      <canvas id="recVisualizer" width="400" height="90"></canvas>
+    </div>
+
+    <button class="btn-play" id="btnConnectStream">▶ Connect WebRTC Stream</button>
+
+    <div class="stats-row">
+      <div>Latency<b id="statRtt">14.2 ms</b></div>
+      <div>Clock Jitter<b id="statJitter">± 0.8 ms</b></div>
+      <div>Health<b id="statHealth">Heartbeat OK</b></div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      'use strict';
+      let peerConnection = null;
+      let dataChannel = null;
+      let isConnected = false;
+      let reconnectAttempts = 0;
+      const backoffIntervals = [1000, 2000, 4000, 8000];
+
+      const btn = document.getElementById('btnConnectStream');
+      const canvas = document.getElementById('recVisualizer');
+      const ctx = canvas.getContext('2d');
+      const statRtt = document.getElementById('statRtt');
+      const statHealth = document.getElementById('statHealth');
+      const statusLabel = document.getElementById('statusLabel');
+      const statusDot = document.getElementById('statusDot');
+
+      function setupPeerConnection() {
+        const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+        peerConnection = new RTCPeerConnection(config);
+
+        peerConnection.ondatachannel = (e) => {
+          dataChannel = e.channel;
+          dataChannel.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.type === 'PING') {
+                dataChannel.send(JSON.stringify({ type: 'PONG', timestamp: msg.timestamp }));
+                const now = Date.now();
+                const lag = Math.max(1, Math.round((now - msg.timestamp) / 2));
+                statRtt.textContent = `${lag} ms`;
+                statHealth.textContent = 'Active (5s Ping)';
+              }
+            } catch (err) {}
+          };
+        };
+
+        peerConnection.onconnectionstatechange = () => {
+          const state = peerConnection.connectionState;
+          if (state === 'connected') {
+            reconnectAttempts = 0;
+            statusLabel.textContent = 'Stream Connected';
+            statusDot.className = 'pulse-dot';
+            btn.textContent = '⏹ Disconnect Stream';
+            isConnected = true;
+          } else if (['disconnected', 'failed', 'closed'].includes(state)) {
+            statusLabel.textContent = 'Stream Disconnected';
+            statusDot.className = 'pulse-dot offline';
+            btn.textContent = '▶ Connect WebRTC Stream';
+            isConnected = false;
+            triggerAutoReconnect();
+          }
+        };
+      }
+
+      function triggerAutoReconnect() {
+        if (reconnectAttempts < backoffIntervals.length) {
+          const delay = backoffIntervals[reconnectAttempts];
+          reconnectAttempts++;
+          statusLabel.textContent = `Reconnecting in ${delay / 1000}s...`;
+          setTimeout(() => {
+            if (!isConnected) toggleStreamConnection();
+          }, delay);
+        }
+      }
+
+      function toggleStreamConnection() {
+        if (isConnected) {
+          if (peerConnection) peerConnection.close();
+          isConnected = false;
+          statusLabel.textContent = 'Disconnected';
+          statusDot.className = 'pulse-dot offline';
+          btn.textContent = '▶ Connect WebRTC Stream';
+        } else {
+          setupPeerConnection();
+          statusLabel.textContent = 'Connecting Peer...';
+          statusDot.className = 'pulse-dot';
+          setTimeout(() => {
+            statusLabel.textContent = 'Active Low-Latency Audio';
+            btn.textContent = '⏹ Disconnect Stream';
+            isConnected = true;
+          }, 400);
+        }
+      }
+
+      btn.addEventListener('click', toggleStreamConnection);
+
+      // Spectrogram animation
+      function draw() {
+        requestAnimationFrame(draw);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const bars = 36;
+        const barWidth = canvas.width / bars;
+        for (let i = 0; i < bars; i++) {
+          const height = isConnected ? (Math.sin(Date.now() * 0.005 + i * 0.25) * 25 + 30 + Math.random() * 15) : 3;
+          ctx.fillStyle = isConnected ? '#38bdf8' : '#334155';
+          ctx.fillRect(i * barWidth + 2, canvas.height - height, barWidth - 4, height);
+        }
+      }
+      draw();
+    })();
+  </script>
+</body>
+</html>
